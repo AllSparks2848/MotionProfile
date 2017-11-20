@@ -1,0 +1,312 @@
+
+package org.usfirst.frc.team2848.robot;
+
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+
+import org.usfirst.frc.team2848.robot.subsystems.DriveTrain;
+import org.usfirst.frc.team2848.robot.util.Gyro;
+import org.usfirst.frc.team2848.robot.util.LogDataSource;
+import org.usfirst.frc.team2848.robot.util.ValueLogger;
+
+
+import edu.wpi.first.wpilibj.Compressor;
+import edu.wpi.first.wpilibj.DigitalInput;
+import edu.wpi.first.wpilibj.IterativeRobot;
+import edu.wpi.first.wpilibj.PowerDistributionPanel;
+import edu.wpi.first.wpilibj.SerialPort;
+import edu.wpi.first.wpilibj.command.Command;
+import edu.wpi.first.wpilibj.command.Scheduler;
+import edu.wpi.first.wpilibj.livewindow.LiveWindow;
+import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+
+
+/**
+ * The VM is configured to automatically run this class, and to call the
+ * functions corresponding to each mode, as described in the IterativeRobot
+ * documentation. If you change the name of this class or the package after
+ * creating this project, you must also update the manifest file in the resource
+ * directory.
+ */
+public class Robot extends IterativeRobot implements LogDataSource {
+
+	private static Robot m_robot;
+	public static Robot getInstance()
+	{
+		return m_robot;
+	}
+	private static OI m_oi;
+	public static OI getOI()
+	{
+		return m_oi;
+	}
+
+
+	
+	
+	private static DriveTrain m_driveTrain;
+	public static DriveTrain getDriveTrain()
+	{
+		return m_driveTrain;
+	}
+	
+	private static PowerDistributionPanel m_PDP;
+	public static PowerDistributionPanel getPDP(){
+		return m_PDP;
+	}
+	
+	Command autonomousCommand;
+	SendableChooser<Command> chooser = new SendableChooser<>();
+
+	private static ValueLogger  logger;
+	private static SerialPort m_arduino;
+	private FileOutputStream log;
+	
+	static long[] times=null;
+	public static long getTime(int index){
+		return times[normalizeIndex(index)];
+	}
+	static double[] headings=null;
+	public static double getHeading(int index){
+		return headings[normalizeIndex(index)];
+	}
+	static int[] rightEncoders=null;
+	public static int getRightEncoder(int index){
+		return rightEncoders[normalizeIndex(index)];
+	}
+	static int[] leftEncoders=null;
+	public static int getLeftEncoder(int index){
+		return leftEncoders[normalizeIndex(index)];
+	}
+	static final int NUMBER_HIST=10000;
+	static int historyIndex=0;
+	public static int getHistoryIndex(){
+		return historyIndex;
+	}
+	public static int normalizeIndex(int index){
+		while(index>=NUMBER_HIST){
+			index-=NUMBER_HIST;
+		}while(index<0){
+			index+=NUMBER_HIST;
+		}
+		return index;
+	}
+	public static int getIndexFromTime(long absoluteTime){
+		long currentTime = getTime(historyIndex);
+		if(absoluteTime>currentTime){
+			return historyIndex;
+		}else{
+			int ticksIX0 = Math.round((currentTime - absoluteTime) / 20000000);
+			long testTime = getTime(ticksIX0);
+			while(testTime<absoluteTime){
+				System.out.println("first loop");
+				ticksIX0+=1;
+				testTime = getTime(ticksIX0);
+			}
+			int ticksIX1 = ticksIX0;
+			while(testTime>absoluteTime){
+				System.out.println("second loop- ticksIX0: "+ticksIX0+" testTime: "+testTime+" absoluteTime: "+absoluteTime);
+				ticksIX0-=1;
+				testTime = getTime(ticksIX0);
+			}
+			ticksIX1 = ticksIX0+1;
+			//IX0 is < than desired, IX1 is > than desired
+			if(Math.abs(ticksIX0-absoluteTime)>Math.abs(ticksIX1-absoluteTime)){
+				return ticksIX1;
+			}else{
+				return ticksIX0;
+			}
+		}
+	}
+	String lastActiveState=ValueLogger.DISABLED_PHASE;
+
+	
+	/**
+	 * This function is run when the robot is first started up and should be
+	 * used for any initialization code.
+	 */
+	@Override
+	public void robotInit() {
+		System.out.println("robotInit");
+		m_robot = this;
+		
+		m_driveTrain= new DriveTrain();
+		
+		
+	
+		
+		
+		m_PDP = new PowerDistributionPanel();
+		
+		
+		
+		m_oi = new OI();
+		logger = null;
+        logger = new ValueLogger("/home/lvuser/dump",10);
+        logger.registerDataSource(this);
+     
+        logger.registerDataSource ( m_driveTrain );
+       
+       
+		
+    		
+        times=new long[NUMBER_HIST];
+        headings=new double[NUMBER_HIST];
+        leftEncoders=new int[NUMBER_HIST];
+        rightEncoders=new int[NUMBER_HIST];
+        
+	}
+	static byte[] buffer = new byte [2];
+	static int counter=0;
+	
+	/**
+	 * This function is called once each time the robot enters Disabled mode.
+	 * You can use it to reset any subsystem information you want to clear when
+	 * the robot is disabled.
+	 */
+	void saveHistory(){
+		times[historyIndex]=System.nanoTime();
+		headings[historyIndex]=Gyro.getYaw();
+		leftEncoders[historyIndex]=m_driveTrain.getEncoderLeft();
+		rightEncoders[historyIndex]=m_driveTrain.getEncoderRight();
+		historyIndex=(historyIndex+1)%NUMBER_HIST;
+	}
+	
+	@Override
+	public void disabledInit() {
+		String prevState=lastActiveState;
+		initializeNewPhase(ValueLogger.DISABLED_PHASE);
+		
+		
+		if(prevState.equals(ValueLogger.DISABLED_PHASE)==false){
+			try{
+				PrintStream p = new PrintStream("/home/lvuser/"+prevState+".csv");
+				p.println("time,heading,right,left");
+				for(int i = 0;i<historyIndex;i++){
+					p.println(times[i]+","+headings[i]+","+rightEncoders[i]+","+leftEncoders[i]);
+				}
+				p.close();
+			}catch(Exception e){}
+		}
+		
+	}
+
+	@Override
+	public void disabledPeriodic() {
+		Scheduler.getInstance().run();
+	}
+
+	/**
+	 * This autonomous (along with the chooser code above) shows how to select
+	 * between different autonomous modes using the dashboard. The sendable
+	 * chooser code works with the Java SmartDashboard. If you prefer the
+	 * LabVIEW Dashboard, remove all of the chooser code and uncomment the
+	 * getString code to get the auto name from the text box below the Gyro
+	 *
+	 * You can add additional auto modes by adding additional commands to the
+	 * chooser code above (like the commented example) or additional comparisons
+	 * to the switch structure below with additional strings & commands.
+	 */
+	@Override
+	public void autonomousInit() {
+		initializeNewPhase(ValueLogger.AUTONOMOUS_PHASE);
+		
+	
+		
+		
+		
+		historyIndex=0;
+	}
+
+	/**
+	 * This function is called periodically during autonomous
+	 */
+	@Override
+	public void autonomousPeriodic() {
+		long start = System.nanoTime();
+        Scheduler.getInstance().run();
+		m_driveTrain.getValues();
+		if ( logger != null ) logger.logValues(start);
+       // if ( logger != null ) logger.logValues(start);
+		//m_driveBase.getValues(); //put driveBase info on SmartDashboard
+		saveHistory();
+	}
+
+	@Override
+	public void teleopInit() {
+		initializeNewPhase(ValueLogger.TELEOP_PHASE);
+		
+		System.out.println("init");
+				m_driveTrain.resetEncoders();
+		if (autonomousCommand != null)
+			autonomousCommand.cancel();
+		try
+		{
+			log = new FileOutputStream("log.csv");
+		}
+		catch(Exception e)
+		{
+			
+		}
+		
+		
+		historyIndex=0;
+	}
+
+	/**
+	 * This function is called periodically during operator control
+	 */
+	@Override
+	public void teleopPeriodic() {
+		long start = System.nanoTime();
+		boolean on = true;
+		
+		Scheduler.getInstance().run();
+		if ( logger != null ) logger.logValues(start);
+		
+		
+		
+		
+		
+		m_driveTrain.getValues();
+		
+		SmartDashboard.putNumber("Gyro Yaw",Gyro.getYaw());
+		
+		saveHistory();
+	
+		
+	}
+
+	/**
+	 * This function is called periodically during test mode
+	 */
+	@Override
+	public void testPeriodic() {
+		LiveWindow.run();
+	}
+	
+	private void initializeNewPhase ( String whichPhase )
+    {
+		lastActiveState=whichPhase;
+        if ( autonomousCommand != null ) {
+            autonomousCommand.cancel();
+            autonomousCommand = null;
+        }
+    	//if ( m_iAmARealRobot ) {
+            //Robot.getDriveBase().initialize();
+            //Robot.getIntake().initialize();
+    	//}
+        Gyro.reset();
+        if ( logger != null ) logger.initializePhase(whichPhase);
+    }
+	
+	public void gatherValues ( ValueLogger logger )
+    {
+		logger.logDoubleValue ( "Gyro Yaw", Gyro.getYaw() );
+    	logger.logDoubleValue ( "Gyro Pitch", Gyro.getPitch() );
+    	logger.logDoubleValue ( "Gyro Roll", Gyro.getRoll() );	
+    	logger.logBooleanValue( "IMU_Connected", Gyro.IMU_Connected() );
+    	logger.logBooleanValue( "IMU_IsCalibrating", Gyro.IMU_IsCalibrating() );
+    }
+}
